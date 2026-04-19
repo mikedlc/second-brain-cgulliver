@@ -314,6 +314,7 @@ export class CoreStack extends cdk.Stack {
             }),
             // Bedrock model invocation (scoped to configured model)
             // FINDING-IAM-03: Replaced resources: ['*'] with specific model ARNs
+            // Note: global.* models use inference-profile ARNs, others use foundation-model ARNs
             new iam.PolicyStatement({
               sid: 'BedrockInvoke',
               effect: iam.Effect.ALLOW,
@@ -324,6 +325,8 @@ export class CoreStack extends cdk.Stack {
               resources: [
                 `arn:aws:bedrock:${this.region}::foundation-model/${classifierModel}`,
                 `arn:aws:bedrock:us-east-1::foundation-model/${classifierModel}`,
+                `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${classifierModel}`,
+                `arn:aws:bedrock:us-east-1:${this.account}:inference-profile/${classifierModel}`,
               ],
             }),
             // CloudWatch Logs
