@@ -705,11 +705,15 @@ export class CoreStack extends cdk.Stack {
     // =========================================================================
 
     // SNS topic for alarm notifications
-    // After deploy, subscribe your email: aws sns subscribe --topic-arn <arn> --protocol email --notification-endpoint you@example.com
     const alarmTopic = new sns.Topic(this, 'AlarmTopic', {
       topicName: 'second-brain-alarms',
       displayName: 'Second Brain Alarms',
     });
+
+    // Email subscription for alarm notifications
+    alarmTopic.addSubscription(
+      new snsSubscriptions.EmailSubscription('mikedlc@gmail.com')
+    );
 
     // Alarm: Worker Lambda errors (>5 per hour)
     const workerErrorAlarm = new cloudwatch.Alarm(this, 'WorkerErrorAlarm', {
