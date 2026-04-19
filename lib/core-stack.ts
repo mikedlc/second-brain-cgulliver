@@ -90,7 +90,7 @@ export class CoreStack extends cdk.Stack {
     // Validates: Requirements 11, 29, 40
     // =========================================================================
     this.repository = new codecommit.Repository(this, 'KnowledgeRepository', {
-      repositoryName: 'second-brain-knowledge',
+      repositoryName: 'cgulliver_SecondBrain',
       description: 'Second Brain knowledge store (Markdown + receipts)',
     });
 
