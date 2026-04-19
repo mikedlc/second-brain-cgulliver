@@ -14,7 +14,7 @@ const app = new cdk.App();
 // =========================================================================
 cdk.Tags.of(app).add('Project', 'second-brain-cgulliver');
 cdk.Tags.of(app).add('ManagedBy', 'cdk');
-cdk.Tags.of(app).add('Repository', 'mikedlc/aws-agentcore-second-brain');
+cdk.Tags.of(app).add('Repository', 'mikedlc/second-brain-cgulliver');
 cdk.Tags.of(app).add('UpstreamSource', 'cgulliver/aws-agentcore-second-brain');
 cdk.Tags.of(app).add('Environment', 'production');
 
