@@ -6,6 +6,17 @@ import { CoreStack } from '../lib/core-stack';
 
 const app = new cdk.App();
 
+// =========================================================================
+// Resource Tagging
+// Tags applied at the app level propagate to ALL resources in ALL stacks.
+// This ensures every resource can be identified, cost-allocated, and
+// cleaned up reliably in a shared account.
+// =========================================================================
+cdk.Tags.of(app).add('Project', 'second-brain');
+cdk.Tags.of(app).add('ManagedBy', 'cdk');
+cdk.Tags.of(app).add('Repository', 'mikedlc/aws-agentcore-second-brain');
+cdk.Tags.of(app).add('Environment', 'production');
+
 const env = {
   account: process.env.CDK_DEFAULT_ACCOUNT,
   region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1',
