@@ -12,6 +12,10 @@ import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as s3Assets from 'aws-cdk-lib/aws-s3-assets';
 import * as cr from 'aws-cdk-lib/custom-resources';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import { Construct } from 'constructs';
 import * as path from 'path';
 
@@ -185,6 +189,16 @@ export class CoreStack extends cdk.Stack {
               ],
               resources: [`arn:aws:logs:${this.region}:${this.account}:log-group:/aws/codebuild/*`],
             }),
+            // FINDING-IAM-04: Split ECR permissions — GetAuthorizationToken requires '*',
+            // other actions scoped to specific repository
+            new iam.PolicyStatement({
+              sid: 'ECRAuth',
+              effect: iam.Effect.ALLOW,
+              actions: [
+                'ecr:GetAuthorizationToken',
+              ],
+              resources: ['*'],
+            }),
             new iam.PolicyStatement({
               sid: 'ECRAccess',
               effect: iam.Effect.ALLOW,
@@ -192,13 +206,12 @@ export class CoreStack extends cdk.Stack {
                 'ecr:BatchCheckLayerAvailability',
                 'ecr:GetDownloadUrlForLayer',
                 'ecr:BatchGetImage',
-                'ecr:GetAuthorizationToken',
                 'ecr:PutImage',
                 'ecr:InitiateLayerUpload',
                 'ecr:UploadLayerPart',
                 'ecr:CompleteLayerUpload',
               ],
-              resources: [this.ecrRepository.repositoryArn, '*'],
+              resources: [this.ecrRepository.repositoryArn],
             }),
             new iam.PolicyStatement({
               sid: 'S3SourceAccess',
@@ -299,7 +312,8 @@ export class CoreStack extends cdk.Stack {
               ],
               resources: [this.ecrRepository.repositoryArn],
             }),
-            // Bedrock model invocation
+            // Bedrock model invocation (scoped to configured model)
+            // FINDING-IAM-03: Replaced resources: ['*'] with specific model ARNs
             new iam.PolicyStatement({
               sid: 'BedrockInvoke',
               effect: iam.Effect.ALLOW,
@@ -307,7 +321,10 @@ export class CoreStack extends cdk.Stack {
                 'bedrock:InvokeModel',
                 'bedrock:InvokeModelWithResponseStream',
               ],
-              resources: ['*'],
+              resources: [
+                `arn:aws:bedrock:${this.region}::foundation-model/${classifierModel}`,
+                `arn:aws:bedrock:us-east-1::foundation-model/${classifierModel}`,
+              ],
             }),
             // CloudWatch Logs
             new iam.PolicyStatement({
@@ -641,16 +658,21 @@ export class CoreStack extends cdk.Stack {
     mailDropParam.grantRead(this.workerFunction);
     conversationTtlParam.grantRead(this.workerFunction);
 
-    // SES send email permission
+    // SES send email permission (scoped to account SES identities)
+    // FINDING-IAM-01: Replaced resources: ['*'] with account-scoped SES identity ARN
     this.workerFunction.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ['ses:SendEmail', 'ses:SendRawEmail'],
-        resources: ['*'],
+        resources: [
+          `arn:aws:ses:${this.region}:${this.account}:identity/*`,
+          `arn:aws:ses:${this.region}:${this.account}:configuration-set/*`,
+        ],
       })
     );
 
-    // AgentCore invoke permission
+    // AgentCore invoke permission (scoped to specific runtime)
+    // FINDING-IAM-02: Removed wildcard runtime/* resource
     this.workerFunction.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -660,7 +682,6 @@ export class CoreStack extends cdk.Stack {
         ],
         resources: [
           agentRuntime.getAtt('AgentRuntimeArn').toString(),
-          `arn:aws:bedrock-agentcore:${this.region}:${this.account}:runtime/*`,
         ],
       })
     );
@@ -680,8 +701,92 @@ export class CoreStack extends cdk.Stack {
     );
 
     // =========================================================================
+    // FINDING-COST-01: CloudWatch Alarms for cost and error monitoring
+    // =========================================================================
+
+    // SNS topic for alarm notifications
+    // After deploy, subscribe your email: aws sns subscribe --topic-arn <arn> --protocol email --notification-endpoint you@example.com
+    const alarmTopic = new sns.Topic(this, 'AlarmTopic', {
+      topicName: 'second-brain-alarms',
+      displayName: 'Second Brain Alarms',
+    });
+
+    // Alarm: Worker Lambda errors (>5 per hour)
+    const workerErrorAlarm = new cloudwatch.Alarm(this, 'WorkerErrorAlarm', {
+      alarmName: 'SecondBrain-WorkerErrors',
+      alarmDescription: 'Worker Lambda error rate exceeds 5 per hour',
+      metric: this.workerFunction.metricErrors({
+        period: cdk.Duration.hours(1),
+        statistic: 'Sum',
+      }),
+      threshold: 5,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    workerErrorAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alarmTopic));
+
+    // Alarm: Worker Lambda invocations (>1000 per day — potential runaway cost)
+    const workerInvocationAlarm = new cloudwatch.Alarm(this, 'WorkerInvocationAlarm', {
+      alarmName: 'SecondBrain-HighInvocations',
+      alarmDescription: 'Worker Lambda invocations exceed 1000/day — check for webhook spam or misconfiguration',
+      metric: this.workerFunction.metricInvocations({
+        period: cdk.Duration.days(1),
+        statistic: 'Sum',
+      }),
+      threshold: 1000,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    workerInvocationAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alarmTopic));
+
+    // Alarm: SQS DLQ has messages (failed processing)
+    // Note: DLQ metric referenced by known queue name since IQueue doesn't expose deadLetterQueue
+    const dlqMetric = new cloudwatch.Metric({
+      namespace: 'AWS/SQS',
+      metricName: 'ApproximateNumberOfMessagesVisible',
+      dimensionsMap: {
+        QueueName: 'second-brain-ingress-dlq',
+      },
+      period: cdk.Duration.minutes(5),
+      statistic: 'Maximum',
+    });
+
+    const dlqAlarm = new cloudwatch.Alarm(this, 'DLQAlarm', {
+      alarmName: 'SecondBrain-DLQMessages',
+      alarmDescription: 'Messages in Dead Letter Queue — processing failures detected',
+      metric: dlqMetric,
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    dlqAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alarmTopic));
+
+    // Alarm: Worker Lambda throttles (capacity issues)
+    const workerThrottleAlarm = new cloudwatch.Alarm(this, 'WorkerThrottleAlarm', {
+      alarmName: 'SecondBrain-WorkerThrottles',
+      alarmDescription: 'Worker Lambda is being throttled',
+      metric: this.workerFunction.metricThrottles({
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+      threshold: 0,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    workerThrottleAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alarmTopic));
+
+    // =========================================================================
     // Stack Outputs
     // =========================================================================
+
+    new cdk.CfnOutput(this, 'AlarmTopicArn', {
+      value: alarmTopic.topicArn,
+      description: 'SNS Topic ARN for alarm notifications — subscribe your email after deploy',
+    });
 
     new cdk.CfnOutput(this, 'IdempotencyTableName', {
       value: this.idempotencyTable.tableName,
