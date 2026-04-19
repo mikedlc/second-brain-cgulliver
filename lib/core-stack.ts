@@ -313,9 +313,9 @@ export class CoreStack extends cdk.Stack {
               resources: [this.ecrRepository.repositoryArn],
             }),
             // Bedrock model invocation (scoped to configured model)
-            // FINDING-IAM-03: Replaced resources: ['*'] with specific model ARNs
-            // Note: global.* models use inference-profile ARNs for the profile itself,
-            // but resolve to foundation-model ARNs (without global. prefix) for actual invocation
+            // FINDING-IAM-03: Scoped to the configured model's foundation-model and inference-profile ARNs
+            // Bedrock uses varying ARN formats (with/without region, with/without account, global prefix)
+            // so we match all foundation-model and inference-profile ARN variants for the configured model
             new iam.PolicyStatement({
               sid: 'BedrockInvoke',
               effect: iam.Effect.ALLOW,
@@ -324,14 +324,11 @@ export class CoreStack extends cdk.Stack {
                 'bedrock:InvokeModelWithResponseStream',
               ],
               resources: [
+                // Foundation model ARNs (various region/account combinations Bedrock uses)
+                `arn:aws:bedrock:*::foundation-model/${classifierModel.replace('global.', '')}`,
+                `arn:aws:bedrock:*::foundation-model/${classifierModel}`,
                 // Inference profile ARNs (for global.* cross-region models)
-                `arn:aws:bedrock:${this.region}:${this.account}:inference-profile/${classifierModel}`,
-                `arn:aws:bedrock:us-east-1:${this.account}:inference-profile/${classifierModel}`,
-                // Foundation model ARNs (resolved model without global. prefix)
-                `arn:aws:bedrock:${this.region}::foundation-model/${classifierModel.replace('global.', '')}`,
-                `arn:aws:bedrock:us-east-1::foundation-model/${classifierModel.replace('global.', '')}`,
-                // Also allow the exact configured model ID as foundation-model (for non-global models)
-                `arn:aws:bedrock:${this.region}::foundation-model/${classifierModel}`,
+                `arn:aws:bedrock:*:${this.account}:inference-profile/${classifierModel}`,
               ],
             }),
             // CloudWatch Logs
