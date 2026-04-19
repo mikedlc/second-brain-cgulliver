@@ -128,7 +128,7 @@ export class IngressStack extends cdk.Stack {
 
     this.queue = new sqs.Queue(this, 'IngressQueue', {
       queueName: 'second-brain-ingress',
-      visibilityTimeout: cdk.Duration.seconds(90),
+      visibilityTimeout: cdk.Duration.seconds(180), // Must be >= Worker Lambda timeout (120s)
       retentionPeriod: cdk.Duration.days(4),
       deadLetterQueue: {
         queue: dlq,
