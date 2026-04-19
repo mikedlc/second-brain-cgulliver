@@ -673,6 +673,7 @@ export class CoreStack extends cdk.Stack {
 
     // AgentCore invoke permission (scoped to specific runtime)
     // FINDING-IAM-02: Removed wildcard runtime/* resource
+    // Note: InvokeAgentRuntime requires access to both the runtime ARN and its endpoint sub-resource
     this.workerFunction.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -682,6 +683,7 @@ export class CoreStack extends cdk.Stack {
         ],
         resources: [
           agentRuntime.getAtt('AgentRuntimeArn').toString(),
+          `${agentRuntime.getAtt('AgentRuntimeArn').toString()}/*`,
         ],
       })
     );
