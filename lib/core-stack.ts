@@ -610,7 +610,7 @@ export class CoreStack extends cdk.Stack {
         MAILDROP_PARAM: mailDropParam.parameterName,
         CONVERSATION_TTL_PARAM: conversationTtlParam.parameterName,
         SES_FROM_EMAIL: senderEmailParam.stringValue,
-        EMAIL_MODE: 'live', // Production mode - emails sent to OmniFocus
+        EMAIL_MODE: 'log', // Log mode - tasks classified but not emailed (no task manager configured)
         NODE_OPTIONS: '--enable-source-maps',
         DEPLOY_VERSION: '69', // Fix retrieve_memories API response format
         // Note: Sync operations now use AgentCore classifier (AGENT_RUNTIME_ARN)
