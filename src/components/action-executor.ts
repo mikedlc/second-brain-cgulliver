@@ -79,9 +79,12 @@ const MAX_DELAY_MS = 30000;
 const sesClient = new SESClient({});
 const ssmClient = new SSMClient({});
 
-// Cached SSM values
+// Cached SSM values with TTL (FINDING-SEC-01)
 let cachedBotToken: string | null = null;
 let cachedMailDrop: string | null = null;
+let botTokenCachedAt: number = 0;
+let mailDropCachedAt: number = 0;
+const SECRET_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
  * Sleep for specified milliseconds
@@ -103,9 +106,11 @@ function calculateBackoff(attempt: number, retryAfter?: number): number {
 
 /**
  * Get Slack bot token from SSM
+ * Caches for 1 hour to support secret rotation without redeployment
  */
 async function getBotToken(paramName: string): Promise<string> {
-  if (cachedBotToken) return cachedBotToken;
+  const now = Date.now();
+  if (cachedBotToken && (now - botTokenCachedAt) < SECRET_CACHE_TTL_MS) return cachedBotToken;
 
   const response = await ssmClient.send(
     new GetParameterCommand({
@@ -115,14 +120,17 @@ async function getBotToken(paramName: string): Promise<string> {
   );
 
   cachedBotToken = response.Parameter?.Value || '';
+  botTokenCachedAt = now;
   return cachedBotToken;
 }
 
 /**
  * Get OmniFocus Mail Drop email from SSM
+ * Caches for 1 hour to support secret rotation without redeployment
  */
 async function getMailDropEmail(paramName: string): Promise<string> {
-  if (cachedMailDrop) return cachedMailDrop;
+  const now = Date.now();
+  if (cachedMailDrop && (now - mailDropCachedAt) < SECRET_CACHE_TTL_MS) return cachedMailDrop;
 
   const response = await ssmClient.send(
     new GetParameterCommand({
@@ -132,6 +140,7 @@ async function getMailDropEmail(paramName: string): Promise<string> {
   );
 
   cachedMailDrop = response.Parameter?.Value || '';
+  mailDropCachedAt = now;
   return cachedMailDrop;
 }
 

@@ -372,11 +372,11 @@ The classifier agent (`agent/classifier.py`) runs on AgentCore Runtime and:
 |----|----------|----------|---------|--------|
 | FINDING-COST-01 | 🔴 HIGH | Cost | No CloudWatch alarms configured | [x] Resolved |
 | FINDING-IAM-01 | 🔴 HIGH | IAM | SES wildcard resource | [x] Resolved |
-| FINDING-AI-01 | 🟡 MEDIUM | AI | Prompt injection risk (mitigated by JSON-only output) | [ ] Open |
+| FINDING-AI-01 | 🟡 MEDIUM | AI | Prompt injection risk (mitigated by JSON-only output) | [x] Resolved |
 | FINDING-IAM-02 | 🟡 MEDIUM | IAM | AgentCore runtime wildcard | [x] Resolved |
 | FINDING-IAM-03 | 🟡 MEDIUM | IAM | Bedrock model invocation wildcard | [x] Resolved |
-| FINDING-NET-02 | 🟡 MEDIUM | Network | No rate limiting on ingress | [ ] Open |
-| FINDING-SEC-01 | 🟡 MEDIUM | Secrets | No cache TTL for secrets | [ ] Open |
+| FINDING-NET-02 | 🟡 MEDIUM | Network | No rate limiting on ingress | [x] Resolved |
+| FINDING-SEC-01 | 🟡 MEDIUM | Secrets | No cache TTL for secrets | [x] Resolved |
 | FINDING-IAM-04 | 🟢 LOW | IAM | ECR wildcard in CodeBuild role | [x] Resolved |
 | FINDING-SEC-02 | 🟢 LOW | Secrets | SES sender email in env var | [ ] Open |
 | FINDING-NET-01 | 🟢 LOW | Network | No IP whitelisting (optional) | [ ] Open |
@@ -389,8 +389,8 @@ The classifier agent (`agent/classifier.py`) runs on AgentCore Runtime and:
 
 ### By Status
 
-- **Open:** 11
-- **Resolved:** 5
+- **Open:** 8
+- **Resolved:** 8
 
 ---
 

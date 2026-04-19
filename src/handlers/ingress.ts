@@ -41,19 +41,55 @@ const HMAC_ENABLED = SECURITY_MODE === 'mtls-hmac' || SECURITY_MODE === 'hmac-on
 const sqsClient = new SQSClient({});
 const ssmClient = new SSMClient({});
 
-// Cache signing secret for Lambda warm starts
+// =========================================================================
+// FINDING-NET-02: In-memory per-user rate limiter
+// Limits each Slack user to MAX_REQUESTS_PER_WINDOW within RATE_LIMIT_WINDOW_MS.
+// State resets on Lambda cold start, which is acceptable for personal use.
+// =========================================================================
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const MAX_REQUESTS_PER_WINDOW = 20; // 20 messages per minute per user
+
+interface RateLimitEntry {
+  count: number;
+  windowStart: number;
+}
+
+const rateLimitMap = new Map<string, RateLimitEntry>();
+
+function isRateLimited(userId: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(userId);
+
+  if (!entry || (now - entry.windowStart) >= RATE_LIMIT_WINDOW_MS) {
+    // New window
+    rateLimitMap.set(userId, { count: 1, windowStart: now });
+    return false;
+  }
+
+  entry.count++;
+  if (entry.count > MAX_REQUESTS_PER_WINDOW) {
+    return true;
+  }
+
+  return false;
+}
+
+// Cache signing secret with TTL for Lambda warm starts (FINDING-SEC-01)
 let cachedSigningSecret: string | null = null;
+let signingSecretCachedAt: number = 0;
+const SECRET_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
  * Get Slack signing secret from SSM Parameter Store
- * Caches the value for Lambda warm starts
+ * Caches for 1 hour to support secret rotation without redeployment
  */
 async function getSigningSecret(): Promise<string> {
   if (!HMAC_ENABLED || !SIGNING_SECRET_PARAM) {
     throw new Error('HMAC verification not enabled or signing secret param not configured');
   }
 
-  if (cachedSigningSecret) {
+  const now = Date.now();
+  if (cachedSigningSecret && (now - signingSecretCachedAt) < SECRET_CACHE_TTL_MS) {
     return cachedSigningSecret;
   }
 
@@ -69,6 +105,7 @@ async function getSigningSecret(): Promise<string> {
   }
 
   cachedSigningSecret = response.Parameter.Value;
+  signingSecretCachedAt = now;
   return cachedSigningSecret;
 }
 
@@ -279,6 +316,17 @@ export async function handler(
         subtype: eventCallback.event.subtype,
       });
       // Return 200 to acknowledge but don't process
+      return {
+        statusCode: 200,
+        body: 'OK',
+      };
+    }
+
+    // FINDING-NET-02: Per-user rate limiting
+    const userId = eventCallback.event.user;
+    if (userId && isRateLimited(userId)) {
+      console.warn('Rate limited', { event_id: eventId, user_id: userId });
+      // Return 200 to acknowledge (don't make Slack retry) but don't process
       return {
         statusCode: 200,
         body: 'OK',

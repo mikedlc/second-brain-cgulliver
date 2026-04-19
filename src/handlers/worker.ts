@@ -109,6 +109,27 @@ import {
 import { log, redactPII } from './logging';
 import { createHash } from 'crypto';
 
+// =========================================================================
+// FINDING-AI-01: Input sanitization for prompt injection mitigation
+// Strips control characters and limits message length before passing to LLM.
+// The classifier only returns JSON and cannot execute actions, so this is
+// defense-in-depth rather than a critical control.
+// =========================================================================
+const MAX_MESSAGE_LENGTH = 10_000; // 10K chars — generous for personal use
+
+function sanitizeInput(text: string): string {
+  // Strip control characters (except newline, tab, carriage return)
+  // eslint-disable-next-line no-control-regex
+  let sanitized = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+
+  // Truncate to max length
+  if (sanitized.length > MAX_MESSAGE_LENGTH) {
+    sanitized = sanitized.substring(0, MAX_MESSAGE_LENGTH);
+  }
+
+  return sanitized;
+}
+
 // Environment variables
 const REPOSITORY_NAME = process.env.REPOSITORY_NAME!;
 const IDEMPOTENCY_TABLE = process.env.IDEMPOTENCY_TABLE!;
@@ -254,7 +275,7 @@ async function processMessage(message: SQSEventMessage): Promise<void> {
     await updateExecutionState(idempotencyConfig, event_id, { status: 'PLANNED' });
 
     const agentResult = await invokeAgentRuntime(agentConfig, {
-      prompt: message_text,
+      prompt: sanitizeInput(message_text),
       system_prompt: systemPrompt.content,
       session_id: `${channel_id}#${user_id}`,
       user_id: user_id,

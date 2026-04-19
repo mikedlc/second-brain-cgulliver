@@ -31,14 +31,18 @@ export interface SlackSendResult {
 // AWS clients
 const ssmClient = new SSMClient({});
 
-// Cached bot token
+// Cached bot token with TTL (FINDING-SEC-01)
 let cachedBotToken: string | null = null;
+let botTokenCachedAt: number = 0;
+const SECRET_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
  * Get Slack bot token from SSM
+ * Caches for 1 hour to support secret rotation without redeployment
  */
 async function getBotToken(paramName: string): Promise<string> {
-  if (cachedBotToken) {
+  const now = Date.now();
+  if (cachedBotToken && (now - botTokenCachedAt) < SECRET_CACHE_TTL_MS) {
     return cachedBotToken;
   }
 
@@ -54,6 +58,7 @@ async function getBotToken(paramName: string): Promise<string> {
   }
 
   cachedBotToken = response.Parameter.Value;
+  botTokenCachedAt = now;
   return cachedBotToken;
 }
 

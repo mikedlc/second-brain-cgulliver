@@ -47,14 +47,18 @@ export interface TaskEmailOptions {
 const sesClient = new SESClient({});
 const ssmClient = new SSMClient({});
 
-// Cached Mail Drop email
+// Cached Mail Drop email with TTL (FINDING-SEC-01)
 let cachedMailDrop: string | null = null;
+let mailDropCachedAt: number = 0;
+const SECRET_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
  * Get OmniFocus Mail Drop email from SSM
+ * Caches for 1 hour to support secret rotation without redeployment
  */
 async function getMailDropEmail(paramName: string): Promise<string> {
-  if (cachedMailDrop) {
+  const now = Date.now();
+  if (cachedMailDrop && (now - mailDropCachedAt) < SECRET_CACHE_TTL_MS) {
     return cachedMailDrop;
   }
 
@@ -70,6 +74,7 @@ async function getMailDropEmail(paramName: string): Promise<string> {
   }
 
   cachedMailDrop = response.Parameter.Value;
+  mailDropCachedAt = now;
   return cachedMailDrop;
 }
 
