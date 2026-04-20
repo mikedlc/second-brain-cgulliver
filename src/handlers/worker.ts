@@ -39,6 +39,34 @@ import {
   executeActionPlan,
   type ExecutorConfig,
 } from '../components/action-executor';
+import type { FilingPlan } from '../types/filing-plan';
+import {
+  validateFilingPlan,
+  parseFilingPlanFromLLM,
+} from '../components/filing-plan-validator';
+import {
+  executeFilingPlan,
+  type FilingExecutorConfig,
+} from '../components/filing-executor';
+import {
+  getActiveSession,
+  createSession,
+  appendMessage,
+  markSessionFiled,
+  markSessionDiscarded,
+  type SessionStoreConfig,
+} from '../components/conversation-session-store';
+import {
+  persistDraft,
+  loadDraft,
+  deleteDraft,
+  listDrafts,
+  buildDraftPath,
+} from '../components/draft-persistence';
+import {
+  retrieveFSI,
+  persistFSI,
+} from '../components/fsi-memory-client';
 import {
   createReceipt,
   appendReceipt,
@@ -166,7 +194,7 @@ const agentConfig: AgentCoreConfig = {
 const systemPromptConfig: SystemPromptConfig = {
   repositoryName: REPOSITORY_NAME,
   branchName: 'main',
-  promptPath: 'system/agent-system-prompt.md',
+  promptPath: '00_System/agent-system-prompt.md',
 };
 
 // Project matcher configuration
@@ -182,6 +210,18 @@ const projectMatcherConfig: ProjectMatcherConfig = {
 const syncConfig: SyncInvokerConfig = {
   agentRuntimeArn: AGENT_RUNTIME_ARN,
   region: AWS_REGION,
+};
+
+// Session store configuration for discuss mode
+const sessionStoreConfig: SessionStoreConfig = {
+  tableName: CONVERSATION_TABLE,
+};
+
+// Filing executor configuration
+const filingExecutorConfig: FilingExecutorConfig = {
+  repositoryName: REPOSITORY_NAME,
+  branchName: 'main',
+  actorId: '', // Set per-request from user_id
 };
 
 // Cached system prompt
@@ -281,13 +321,13 @@ async function processMessage(message: SQSEventMessage): Promise<void> {
       user_id: user_id,
     });
 
-    // Step 5.5: Check for multi-item response
+    // Step 5.5: Check for multi-item response (legacy path)
     if (agentResult.success && agentResult.multiItemResponse) {
       await handleMultiItemMessage(event_id, slackContext, agentResult.multiItemResponse, systemPrompt);
       return;
     }
 
-    if (!agentResult.success || !agentResult.actionPlan) {
+    if (!agentResult.success) {
       // Log raw response for debugging if available
       if (agentResult.rawResponse) {
         log('error', 'AgentCore raw response', {
@@ -298,52 +338,75 @@ async function processMessage(message: SQSEventMessage): Promise<void> {
       throw new Error(agentResult.error || 'AgentCore invocation failed');
     }
 
-    const actionPlan = agentResult.actionPlan;
+    // Step 6: Try to parse as FilingPlan first, fall back to ActionPlan
+    const rawResponse = agentResult.rawResponse || '';
+    const filingPlan = agentResult.actionPlan
+      ? null // If agentcore-client already parsed it, we handle below
+      : parseFilingPlanFromLLM(rawResponse);
+
+    // If we got a FilingPlan (either parsed from raw or from actionPlan), route on intent
+    const parsedFilingPlan: FilingPlan | null = filingPlan || (agentResult.actionPlan ? agentResult.actionPlan as unknown as FilingPlan : null);
+
+    if (!parsedFilingPlan) {
+      throw new Error('Failed to parse response from AgentCore');
+    }
 
     log('info', 'Classification result', {
       event_id,
-      intent: actionPlan.intent,
-      intent_confidence: actionPlan.intent_confidence,
-      classification: actionPlan.classification,
-      confidence: actionPlan.confidence,
-      has_query_response: !!actionPlan.query_response,
-      has_cited_files: !!actionPlan.cited_files,
-      has_linked_items: !!actionPlan.linked_items,
-      linked_items_count: actionPlan.linked_items?.length || 0,
+      intent: parsedFilingPlan.intent,
+      intent_confidence: parsedFilingPlan.intent_confidence,
+      action: parsedFilingPlan.action,
+      file_path: parsedFilingPlan.file_path,
+      has_query_response: !!parsedFilingPlan.query_response,
+      has_cited_files: !!parsedFilingPlan.cited_files,
+      has_linked_items: !!parsedFilingPlan.linked_items,
+      linked_items_count: parsedFilingPlan.linked_items?.length || 0,
     });
 
-    // Step 6: Validate Action Plan
-    const validation = validateActionPlan(actionPlan);
+    // Step 6.5: Validate Filing Plan
+    const validation = validateFilingPlan(parsedFilingPlan);
     if (!validation.valid) {
-      log('warn', 'Validation errors', {
+      log('warn', 'Filing Plan validation errors', {
         event_id,
         errors: validation.errors,
-        actionPlan: JSON.stringify(actionPlan).substring(0, 1000),
+        filingPlan: JSON.stringify(parsedFilingPlan).substring(0, 1000),
       });
-      await handleValidationFailure(event_id, slackContext, validation.errors.map(e => e.message));
+      await handleValidationFailure(event_id, slackContext, validation.errors);
       return;
     }
 
-    // Step 6.5: Check for query intent (Phase 2)
-    if (actionPlan.intent === 'query') {
-      await handleQueryIntent(event_id, slackContext, message_text, actionPlan, systemPrompt);
-      return;
-    }
+    // Step 7: Route based on Filing Plan intent
+    switch (parsedFilingPlan.intent) {
+      case 'query': {
+        // Preserve existing query handler — cast to ActionPlan for backward compat
+        const actionPlan = parsedFilingPlan as unknown as ActionPlan;
+        await handleQueryIntent(event_id, slackContext, message_text, actionPlan, systemPrompt);
+        return;
+      }
 
-    // Step 6.6: Check for status_update intent
-    if (actionPlan.intent === 'status_update' && actionPlan.status_update) {
-      await handleStatusUpdate(event_id, slackContext, actionPlan);
-      return;
-    }
+      case 'status_update': {
+        // Preserve existing status update handler
+        const actionPlan = parsedFilingPlan as unknown as ActionPlan;
+        if (actionPlan.status_update) {
+          await handleStatusUpdate(event_id, slackContext, actionPlan);
+          return;
+        }
+        // Fall through to capture if no status_update details
+        break;
+      }
 
-    // Step 7: Check if clarification needed (only for capture intent)
-    if (actionPlan.classification && shouldAskClarification(actionPlan.confidence, actionPlan.classification)) {
-      await handleLowConfidence(event_id, slackContext, message_text, actionPlan);
-      return;
-    }
+      case 'discuss': {
+        await handleDiscussMode(event_id, slackContext, message_text, parsedFilingPlan, systemPrompt);
+        return;
+      }
 
-    // Step 8: Execute side effects
-    await executeAndFinalize(event_id, slackContext, actionPlan, systemPrompt);
+      case 'capture':
+      default: {
+        // Execute filing plan via the new filing executor
+        await executeCaptureIntent(event_id, slackContext, parsedFilingPlan, systemPrompt);
+        return;
+      }
+    }
 
   } catch (error) {
     log('error', 'Processing failed', {
@@ -365,6 +428,517 @@ async function processMessage(message: SQSEventMessage): Promise<void> {
 
     throw error;
   }
+}
+
+/**
+ * Execute a capture intent via the Filing Executor
+ *
+ * Validates: Requirements 7.1–7.10, 10.1, 10.3, 10.4
+ */
+async function executeCaptureIntent(
+  eventId: string,
+  slackContext: SlackContext,
+  filingPlan: FilingPlan,
+  systemPrompt: { content: string; metadata: { commitId: string; sha256: string } }
+): Promise<void> {
+  await updateExecutionState(idempotencyConfig, eventId, { status: 'EXECUTING' });
+
+  const config: FilingExecutorConfig = {
+    repositoryName: REPOSITORY_NAME,
+    branchName: 'main',
+    actorId: slackContext.user_id,
+  };
+
+  // Retrieve FSI from AgentCore Memory
+  const MEMORY_ID = process.env.MEMORY_ID || '';
+  let fsi = await retrieveFSI(MEMORY_ID, slackContext.user_id, AWS_REGION);
+  if (!fsi) {
+    // Use empty FSI if retrieval fails
+    fsi = {
+      version: 1,
+      last_updated: new Date().toISOString(),
+      commit_id: '',
+      entries: [],
+    };
+    log('warn', 'FSI retrieval failed, using empty FSI', { event_id: eventId });
+  }
+
+  // Execute the filing plan
+  const result = await executeFilingPlan(
+    filingPlan,
+    config,
+    fsi,
+    async (updatedFSI) => {
+      await persistFSI(MEMORY_ID, slackContext.user_id, updatedFSI, AWS_REGION);
+    }
+  );
+
+  if (!result.success) {
+    log('warn', 'Filing execution failed', {
+      event_id: eventId,
+      error: result.error,
+      warnings: result.warnings,
+    });
+
+    await sendSlackReply(
+      { botTokenParam: BOT_TOKEN_PARAM },
+      {
+        channel: slackContext.channel_id,
+        text: formatErrorReply(result.error || 'Filing failed'),
+        thread_ts: slackContext.thread_ts,
+      }
+    );
+
+    await markFailed(idempotencyConfig, eventId, result.error || 'Filing failed');
+    return;
+  }
+
+  // Handle delete confirmation flow
+  if (result.confirmationRequired) {
+    // Store pending delete in conversation context for two-step confirmation
+    await setContext(conversationConfig, slackContext.channel_id, slackContext.user_id, {
+      original_event_id: eventId,
+      original_message: JSON.stringify(filingPlan),
+      original_classification: 'delete-confirm' as Classification,
+      original_confidence: filingPlan.intent_confidence,
+      clarification_asked: `Delete ${filingPlan.file_path}? Reply 'yes' to confirm.`,
+    });
+
+    await sendSlackReply(
+      { botTokenParam: BOT_TOKEN_PARAM },
+      {
+        channel: slackContext.channel_id,
+        text: `⚠️ Delete \`${filingPlan.file_path}\`? Reply *yes* to confirm.`,
+        thread_ts: slackContext.thread_ts,
+      }
+    );
+
+    await markCompleted(idempotencyConfig, eventId);
+    return;
+  }
+
+  // Send Slack confirmation
+  const warningText = result.warnings.length > 0
+    ? `\n⚠️ ${result.warnings.join('\n⚠️ ')}`
+    : '';
+
+  const confirmationText = `✅ Filed: *${filingPlan.title}*\n📁 \`${filingPlan.file_path}\` (${filingPlan.action})${warningText}`;
+
+  await sendSlackReply(
+    { botTokenParam: BOT_TOKEN_PARAM },
+    {
+      channel: slackContext.channel_id,
+      text: confirmationText,
+      thread_ts: slackContext.thread_ts,
+    }
+  );
+
+  // Create receipt
+  const receipt = createReceipt(
+    eventId,
+    slackContext,
+    'capture' as Classification,
+    filingPlan.intent_confidence,
+    [{ type: 'commit', status: 'success', details: { commitId: result.commitId } }],
+    [filingPlan.file_path],
+    result.commitId || null,
+    `Filed: ${filingPlan.title} → ${filingPlan.file_path}`
+  );
+
+  await appendReceipt(knowledgeConfig, receipt);
+
+  // Sync to Memory (fire-and-forget)
+  if (AGENT_RUNTIME_ARN && result.commitId) {
+    invokeSyncItem(syncConfig, {
+      operation: 'sync_item',
+      actorId: slackContext.user_id,
+      itemPath: filingPlan.file_path,
+      itemContent: filingPlan.content,
+      commitId: result.commitId,
+    }).catch(err => {
+      log('warn', 'Post-filing sync failed', { event_id: eventId, error: err instanceof Error ? err.message : 'Unknown' });
+    });
+  }
+
+  await markCompleted(idempotencyConfig, eventId, result.commitId);
+
+  log('info', 'Capture completed', {
+    event_id: eventId,
+    file_path: filingPlan.file_path,
+    action: filingPlan.action,
+    commit_id: result.commitId,
+  });
+}
+
+/**
+ * Handle discuss mode interaction
+ *
+ * Manages conversational sessions: create/continue sessions, persist drafts,
+ * handle "file this", "resume", "discard", and "list drafts" commands.
+ *
+ * Validates: Requirements 13.1–13.18
+ */
+async function handleDiscussMode(
+  eventId: string,
+  slackContext: SlackContext,
+  messageText: string,
+  filingPlan: FilingPlan,
+  systemPrompt: { content: string; metadata: { commitId: string; sha256: string } }
+): Promise<void> {
+  await updateExecutionState(idempotencyConfig, eventId, { status: 'EXECUTING' });
+
+  const normalizedText = messageText.trim().toLowerCase();
+
+  // Handle "list drafts" / "what conversations are open?"
+  if (normalizedText.match(/^(list\s+drafts?|what\s+conversations?\s+(are\s+)?open|show\s+(my\s+)?pending\s+threads?)$/i)) {
+    await handleListDrafts(eventId, slackContext);
+    return;
+  }
+
+  // Handle "resume ds-xxxxx" or "resume <topic>"
+  const resumeMatch = normalizedText.match(/^resume\s+(.+)$/i);
+  if (resumeMatch) {
+    await handleResumeDraft(eventId, slackContext, resumeMatch[1].trim(), systemPrompt);
+    return;
+  }
+
+  // Handle "discard ds-xxxxx"
+  const discardMatch = normalizedText.match(/^discard\s+(.+)$/i);
+  if (discardMatch) {
+    await handleDiscardDraft(eventId, slackContext, discardMatch[1].trim());
+    return;
+  }
+
+  // Handle "file this" / "save this" / "commit this" / "record this"
+  if (normalizedText.match(/^(file|save|commit|record)\s+this$/i)) {
+    await handleFileThis(eventId, slackContext, systemPrompt);
+    return;
+  }
+
+  // Normal discuss flow: create or continue session
+  let session = await getActiveSession(sessionStoreConfig, slackContext.channel_id, slackContext.user_id);
+
+  if (!session) {
+    // Create new session
+    const topic = filingPlan.title || messageText.substring(0, 100);
+    const relatedArea = filingPlan.file_path?.split('/')[0] || '_INBOX';
+    session = await createSession(
+      sessionStoreConfig,
+      slackContext.channel_id,
+      slackContext.user_id,
+      topic,
+      relatedArea
+    );
+    log('info', 'Created new discuss session', {
+      event_id: eventId,
+      discussion_id: session.discussion_id,
+      topic,
+    });
+  }
+
+  // Append user message to session
+  await appendMessage(sessionStoreConfig, session.session_id, 'user', messageText);
+  session.messages.push({ role: 'user', content: messageText, timestamp: new Date().toISOString() });
+  session.message_count += 1;
+  session.last_active_at = new Date().toISOString();
+
+  // Persist draft to 00_System/Pending/ on every message
+  try {
+    await persistDraft(session, knowledgeConfig);
+  } catch (err) {
+    log('warn', 'Draft persistence failed', {
+      event_id: eventId,
+      error: err instanceof Error ? err.message : 'Unknown',
+    });
+  }
+
+  // Send conversational Slack reply using discuss_response from Filing Plan
+  const replyText = filingPlan.discuss_response || 'I\'m thinking about that. Could you tell me more?';
+
+  // Append assistant message to session
+  await appendMessage(sessionStoreConfig, session.session_id, 'assistant', replyText);
+
+  await sendSlackReply(
+    { botTokenParam: BOT_TOKEN_PARAM },
+    {
+      channel: slackContext.channel_id,
+      text: replyText,
+      thread_ts: slackContext.thread_ts,
+    }
+  );
+
+  // Create receipt
+  const receipt = createReceipt(
+    eventId,
+    slackContext,
+    'discuss' as Classification,
+    filingPlan.intent_confidence,
+    [{ type: 'slack_reply', status: 'success', details: { type: 'discuss_response' } }],
+    [],
+    null,
+    `Discussion: ${session.topic} (${session.discussion_id})`
+  );
+
+  await appendReceipt(knowledgeConfig, receipt);
+  await markCompleted(idempotencyConfig, eventId);
+
+  log('info', 'Discuss mode completed', {
+    event_id: eventId,
+    discussion_id: session.discussion_id,
+    message_count: session.message_count,
+  });
+}
+
+/**
+ * Handle "file this" command — file the current discussion session
+ */
+async function handleFileThis(
+  eventId: string,
+  slackContext: SlackContext,
+  systemPrompt: { content: string; metadata: { commitId: string; sha256: string } }
+): Promise<void> {
+  const session = await getActiveSession(sessionStoreConfig, slackContext.channel_id, slackContext.user_id);
+
+  if (!session) {
+    await sendSlackReply(
+      { botTokenParam: BOT_TOKEN_PARAM },
+      {
+        channel: slackContext.channel_id,
+        text: 'No active discussion to file. Start a conversation first.',
+        thread_ts: slackContext.thread_ts,
+      }
+    );
+    await markCompleted(idempotencyConfig, eventId);
+    return;
+  }
+
+  // Build conversation context for the Classifier
+  const conversationContext = session.messages
+    .map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`)
+    .join('\n');
+
+  // Re-invoke Classifier with full conversation to produce a capture FilingPlan
+  const agentResult = await invokeAgentRuntime(agentConfig, {
+    prompt: `File this conversation as knowledge. Topic: ${session.topic}\n\nConversation:\n${conversationContext}`,
+    system_prompt: systemPrompt.content,
+    session_id: `${slackContext.channel_id}#${slackContext.user_id}`,
+    user_id: slackContext.user_id,
+  });
+
+  if (!agentResult.success || !agentResult.actionPlan) {
+    await sendSlackReply(
+      { botTokenParam: BOT_TOKEN_PARAM },
+      {
+        channel: slackContext.channel_id,
+        text: formatErrorReply('Failed to produce filing plan from conversation'),
+        thread_ts: slackContext.thread_ts,
+      }
+    );
+    await markFailed(idempotencyConfig, eventId, 'Failed to produce filing plan from conversation');
+    return;
+  }
+
+  // Execute the capture filing plan
+  const capturePlan = agentResult.actionPlan as unknown as FilingPlan;
+  capturePlan.intent = 'capture';
+
+  await executeCaptureIntent(eventId, slackContext, capturePlan, systemPrompt);
+
+  // Mark session as filed and delete draft
+  await markSessionFiled(sessionStoreConfig, session.session_id);
+  try {
+    const draftPath = buildDraftPath(session);
+    await deleteDraft(draftPath, knowledgeConfig);
+  } catch (err) {
+    log('warn', 'Failed to delete draft after filing', {
+      event_id: eventId,
+      error: err instanceof Error ? err.message : 'Unknown',
+    });
+  }
+
+  log('info', 'Discussion filed', {
+    event_id: eventId,
+    discussion_id: session.discussion_id,
+  });
+}
+
+/**
+ * Handle "resume ds-xxxxx" command — resume a draft discussion
+ */
+async function handleResumeDraft(
+  eventId: string,
+  slackContext: SlackContext,
+  identifier: string,
+  systemPrompt: { content: string; metadata: { commitId: string; sha256: string } }
+): Promise<void> {
+  // Search for draft by session ID or topic
+  const drafts = await listDrafts(knowledgeConfig);
+  const matchingDraft = drafts.find(d =>
+    d.session_id === identifier ||
+    d.topic.toLowerCase().includes(identifier.toLowerCase())
+  );
+
+  if (!matchingDraft) {
+    await sendSlackReply(
+      { botTokenParam: BOT_TOKEN_PARAM },
+      {
+        channel: slackContext.channel_id,
+        text: `Draft not found: "${identifier}". Use "list drafts" to see available drafts.`,
+        thread_ts: slackContext.thread_ts,
+      }
+    );
+    await markCompleted(idempotencyConfig, eventId);
+    return;
+  }
+
+  // Load the draft and restore session
+  const restoredSession = await loadDraft(matchingDraft.path, knowledgeConfig);
+  if (!restoredSession) {
+    await sendSlackReply(
+      { botTokenParam: BOT_TOKEN_PARAM },
+      {
+        channel: slackContext.channel_id,
+        text: `Failed to load draft: "${identifier}"`,
+        thread_ts: slackContext.thread_ts,
+      }
+    );
+    await markFailed(idempotencyConfig, eventId, 'Failed to load draft');
+    return;
+  }
+
+  // Recreate session in DynamoDB
+  const newSession = await createSession(
+    sessionStoreConfig,
+    slackContext.channel_id,
+    slackContext.user_id,
+    restoredSession.topic,
+    restoredSession.related_area
+  );
+
+  // Replay messages into the new session
+  for (const msg of restoredSession.messages) {
+    await appendMessage(sessionStoreConfig, newSession.session_id, msg.role, msg.content);
+  }
+
+  const summaryText = `📝 Resumed discussion: *${restoredSession.topic}* (${restoredSession.messages.length} messages). Continue where you left off.`;
+
+  await sendSlackReply(
+    { botTokenParam: BOT_TOKEN_PARAM },
+    {
+      channel: slackContext.channel_id,
+      text: summaryText,
+      thread_ts: slackContext.thread_ts,
+    }
+  );
+
+  await markCompleted(idempotencyConfig, eventId);
+
+  log('info', 'Draft resumed', {
+    event_id: eventId,
+    discussion_id: matchingDraft.session_id,
+    topic: matchingDraft.topic,
+  });
+}
+
+/**
+ * Handle "discard ds-xxxxx" command — delete a draft
+ */
+async function handleDiscardDraft(
+  eventId: string,
+  slackContext: SlackContext,
+  identifier: string
+): Promise<void> {
+  const drafts = await listDrafts(knowledgeConfig);
+  const matchingDraft = drafts.find(d =>
+    d.session_id === identifier ||
+    d.topic.toLowerCase().includes(identifier.toLowerCase())
+  );
+
+  if (!matchingDraft) {
+    await sendSlackReply(
+      { botTokenParam: BOT_TOKEN_PARAM },
+      {
+        channel: slackContext.channel_id,
+        text: `Draft not found: "${identifier}". Use "list drafts" to see available drafts.`,
+        thread_ts: slackContext.thread_ts,
+      }
+    );
+    await markCompleted(idempotencyConfig, eventId);
+    return;
+  }
+
+  // Delete the draft
+  await deleteDraft(matchingDraft.path, knowledgeConfig);
+
+  // Mark session as discarded if it exists
+  const sessionId = `${slackContext.channel_id}#${slackContext.user_id}`;
+  try {
+    await markSessionDiscarded(sessionStoreConfig, sessionId);
+  } catch {
+    // Session may not exist in DynamoDB (already expired)
+  }
+
+  await sendSlackReply(
+    { botTokenParam: BOT_TOKEN_PARAM },
+    {
+      channel: slackContext.channel_id,
+      text: `🗑️ Discarded draft: *${matchingDraft.topic}* (${matchingDraft.session_id})`,
+      thread_ts: slackContext.thread_ts,
+    }
+  );
+
+  await markCompleted(idempotencyConfig, eventId);
+
+  log('info', 'Draft discarded', {
+    event_id: eventId,
+    discussion_id: matchingDraft.session_id,
+  });
+}
+
+/**
+ * Handle "list drafts" command — list all pending drafts
+ */
+async function handleListDrafts(
+  eventId: string,
+  slackContext: SlackContext
+): Promise<void> {
+  const drafts = await listDrafts(knowledgeConfig);
+
+  if (drafts.length === 0) {
+    await sendSlackReply(
+      { botTokenParam: BOT_TOKEN_PARAM },
+      {
+        channel: slackContext.channel_id,
+        text: 'No pending discussions.',
+        thread_ts: slackContext.thread_ts,
+      }
+    );
+    await markCompleted(idempotencyConfig, eventId);
+    return;
+  }
+
+  const lines = ['📋 *Pending Discussions:*', ''];
+  for (const draft of drafts) {
+    const lastActive = draft.last_active_at.split('T')[0];
+    lines.push(`• *${draft.topic}* — ${draft.message_count} messages, last active ${lastActive} (\`${draft.session_id}\`)`);
+  }
+  lines.push('', 'Use `resume <session_id>` to continue or `discard <session_id>` to delete.');
+
+  await sendSlackReply(
+    { botTokenParam: BOT_TOKEN_PARAM },
+    {
+      channel: slackContext.channel_id,
+      text: lines.join('\n'),
+      thread_ts: slackContext.thread_ts,
+    }
+  );
+
+  await markCompleted(idempotencyConfig, eventId);
+
+  log('info', 'Listed drafts', {
+    event_id: eventId,
+    draft_count: drafts.length,
+  });
 }
 
 /**
