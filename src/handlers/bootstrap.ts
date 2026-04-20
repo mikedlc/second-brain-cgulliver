@@ -2,17 +2,19 @@
  * Bootstrap Custom Resource Handler
  * 
  * Seeds the CodeCommit repository with:
- * - Folder structure: 00-inbox/, 10-ideas/, 20-decisions/, 30-projects/, 90-receipts/, system/
- * - Default system prompt: system/agent-system-prompt.md
+ * - Organic folder structure: 00_System/, 10_Work/, 20_Personal/, 25_Real_Estate/, 30_Archive/, 40_Exports/, _INBOX/
+ * - Default system prompt: 00_System/agent-system-prompt.md
  * 
- * Validates: Requirements 29, 40
+ * Bootstrap is destructive: deletes all existing content before creating scaffold.
+ * 
+ * Validates: Requirements 6.1, 6.2, 6.3
  */
 
 import {
   CodeCommitClient,
   GetBranchCommand,
   CreateCommitCommand,
-  GetFileCommand,
+  GetFolderCommand,
   BranchDoesNotExistException,
 } from '@aws-sdk/client-codecommit';
 import type {
@@ -24,107 +26,121 @@ const REPOSITORY_NAME = process.env.REPOSITORY_NAME!;
 
 const codecommitClient = new CodeCommitClient({});
 
-// Default system prompt content
-const DEFAULT_SYSTEM_PROMPT = `# Second Brain Agent System Prompt
+// Default system prompt content — loaded from 00_System/agent-system-prompt.md at runtime
+const DEFAULT_SYSTEM_PROMPT = `# Second Brain Agent — Organic Filing Classifier
 
-## Role
+## Operating Contract
 
-You are a personal knowledge management assistant. Your job is to classify incoming messages and generate structured Action Plans for the orchestrator to execute.
+- The user thinks and talks. The bot maintains the record.
+- The user never files, tags, or organizes.
+- The bot determines WHERE content lives and HOW to integrate it.
+- Every message is either captured, discussed, queried, or used to update status.
 
-## Core Responsibilities
+## Folder Structure
 
-1. **Classify** each message into one of: inbox, idea, decision, project, task
-2. **Generate** a confidence score (0.0 to 1.0) for your classification
-3. **Create** an Action Plan with file operations and metadata
-4. **Explain** your reasoning briefly
+Top-level areas use the NN_Name format:
 
-## Classification Rules
+- 00_System — Agent config, templates, pending drafts
+- 10_Work — Professional projects, career, work notes
+- 20_Personal — Personal life, health, hobbies, relationships
+- 25_Real_Estate — Property, renovations, contractors
+- 30_Archive — Completed/inactive content (preserves original structure)
+- 40_Exports — Generated reports, summaries
+- _INBOX — Truly ambiguous content only (last resort)
 
-### inbox
-- Quick thoughts, notes, or observations that don't fit other categories
-- Default classification when uncertain
-- Signals: "note to self", "reminder", stream of consciousness
+Subfolders are created organically as topics emerge (e.g., 25_Real_Estate/CNC_Mill_Build/).
 
-### idea
-- Conceptual insights, observations, or hypotheses
-- Things worth exploring or remembering
-- Signals: "I think", "what if", "interesting that", observations about patterns
+## Filing Rules
 
-### decision
-- Explicit commitments or choices made
-- Things that affect future behavior
-- Signals: "I've decided", "going to", "will", "won't", commitment language
+1. Determine the AREA from content domain
+2. Check the Folder Structure Index for existing files on this topic
+3. If a relevant file exists, prefer append or update over create
+4. If no relevant file exists, create in the appropriate area/subfolder
+5. Create subfolders organically when a new topic warrants its own location
 
-### project
-- Multi-step initiatives with clear objectives
-- Ongoing work that needs tracking
-- Signals: project names, milestones, "working on", "building"
+## Interaction Modes
 
-### task
-- Actionable items with clear completion criteria
-- Things that need to be done
-- Signals: "need to", "should", "must", "todo", imperative verbs
+- discuss — Conversational exploration, no filing. Accumulate context across messages.
+- capture — Commit content to the Knowledge Repository.
+- query — Retrieve and synthesize existing knowledge.
+- status_update — Update project status.
 
-## Confidence Scoring
+## Filing Plan JSON Output Contract
 
-- **High (≥ 0.85)**: Clear signals, unambiguous classification
-- **Medium (0.70-0.84)**: Some signals present, reasonable confidence
-- **Low (< 0.70)**: Ambiguous, multiple possible classifications
-
-## Output Contract
-
-You MUST return a valid JSON Action Plan with this structure:
+Return a single JSON object (no prose, no explanation outside JSON):
 
 \`\`\`json
 {
-  "classification": "inbox|idea|decision|project|task",
-  "confidence": 0.0-1.0,
-  "reasoning": "Brief explanation",
-  "title": "Short title for the item",
-  "content": "Formatted content for the file",
-  "suggested_slug": "optional-slug-for-filename",
-  "file_operations": [
-    {
-      "operation": "create|append",
-      "path": "path/to/file.md",
-      "content": "Content to write"
-    }
-  ],
-  "task_details": {
-    "title": "Task title (for task classification only)",
-    "context": "Additional context"
-  }
+  "intent": "capture | discuss | query | status_update",
+  "intent_confidence": 0.0-1.0,
+  "file_path": "NN_Area/Subfolder/filename.md",
+  "action": "create | append | update | delete | move",
+  "destination_path": "path (required for move)",
+  "section_target": "## Heading (required for update/section-delete)",
+  "integration_metadata": {
+    "related_files": ["path1.md", "path2.md"],
+    "content_disposition": "new_topic | continuation | supersedes | contradicts | refines",
+    "confidence": 0.0-1.0
+  },
+  "title": "Concise title",
+  "content": "Markdown body",
+  "reasoning": "1-2 sentences explaining the filing decision",
+  "discuss_response": "Conversational reply (for discuss intent)",
+  "session_id": "ds-xxxxxxx (for discuss continuity)",
+  "task_details": { "title": "Imperative task", "context": "Details" }
 }
 \`\`\`
 
-## Hard Constraints
+## Naming Conventions
 
-- NEVER execute side effects yourself
-- ALWAYS return valid JSON
-- NEVER include PII in reasoning
-- ALWAYS use ISO 8601 dates (YYYY-MM-DD)
-- NEVER use emojis in file content
+- Areas: NN_Name (e.g., 10_Work, 25_Real_Estate)
+- Subfolders: Descriptive_Name with underscores (e.g., CNC_Mill_Build, Solar_Project)
+- Files: kebab-case.md (e.g., research-notes.md, supplier-contacts.md)
 
-## Forbidden Behaviors
+## Action Rules
 
-- Do not ask clarifying questions in the Action Plan
-- Do not refuse to classify (use inbox as fallback)
-- Do not include conversation history in file content
-- Do not generate content unrelated to the input message
+### create
+Use when the content represents a new topic with no existing file.
+
+### append
+Use when the content adds information to an existing topic. The Content Integrator adds content under the most relevant heading, or creates a new section.
+
+### update
+Use when the content contradicts, supersedes, or refines existing content. Requires section_target to identify which part of the file to modify.
+
+### delete
+Use when the user requests removal. For full-file delete, the Worker asks for confirmation. For section-level delete (with section_target), no confirmation needed.
+
+### move
+Use when the user requests content be relocated or archived. Requires destination_path. For archiving, use 30_Archive/ preserving the original subfolder structure.
+
+## Discuss Mode Rules
+
+- Respond conversationally. Do NOT produce file operations.
+- Draw on the Folder Structure Index and existing file content to inform responses.
+- Accumulate context across messages within the session.
+- When the user says "file this" / "save this" / "commit this" / "record this", produce a capture Filing Plan that distills the full conversation.
+
+## _INBOX Rules
+
+Use _INBOX only for truly ambiguous content that does not fit any area. If you can determine the domain with reasonable confidence, file it in the appropriate area instead. _INBOX is a last resort, not a default.
 `;
 
-// Folder structure with .gitkeep files
+// Organic folder structure with .gitkeep files
 const FOLDER_STRUCTURE = [
-  '00-inbox/.gitkeep',
-  '10-ideas/.gitkeep',
-  '20-decisions/.gitkeep',
-  '30-projects/.gitkeep',
-  '90-receipts/.gitkeep',
-  'system/.gitkeep',
+  '00_System/.gitkeep',
+  '00_System/Pending/.gitkeep',
+  '00_System/Templates/.gitkeep',
+  '10_Work/.gitkeep',
+  '20_Personal/.gitkeep',
+  '25_Real_Estate/.gitkeep',
+  '30_Archive/.gitkeep',
+  '40_Exports/.gitkeep',
+  '_INBOX/.gitkeep',
 ];
 
 /**
- * Check if repository has any commits
+ * Check if repository has any commits (main branch exists)
  */
 async function hasCommits(): Promise<boolean> {
   try {
@@ -144,26 +160,67 @@ async function hasCommits(): Promise<boolean> {
 }
 
 /**
- * Check if system prompt already exists
+ * Get the latest commit ID for the main branch
  */
-async function systemPromptExists(): Promise<boolean> {
-  try {
-    await codecommitClient.send(
-      new GetFileCommand({
-        repositoryName: REPOSITORY_NAME,
-        filePath: 'system/agent-system-prompt.md',
-      })
-    );
-    return true;
-  } catch {
-    return false;
-  }
+async function getLatestCommitId(): Promise<string> {
+  const result = await codecommitClient.send(
+    new GetBranchCommand({
+      repositoryName: REPOSITORY_NAME,
+      branchName: 'main',
+    })
+  );
+  return result.branch?.commitId || '';
 }
 
 /**
- * Create initial commit with folder structure and system prompt
+ * List all files in the repository for deletion
  */
-async function bootstrapRepository(): Promise<string> {
+async function listAllFiles(commitId: string): Promise<string[]> {
+  const files: string[] = [];
+
+  async function walkFolder(folderPath: string): Promise<void> {
+    try {
+      const result = await codecommitClient.send(
+        new GetFolderCommand({
+          repositoryName: REPOSITORY_NAME,
+          commitSpecifier: commitId,
+          folderPath,
+        })
+      );
+
+      // Add files
+      if (result.files) {
+        for (const file of result.files) {
+          if (file.relativePath) {
+            const fullPath = folderPath === '/' ? file.relativePath : `${folderPath}/${file.relativePath}`;
+            files.push(fullPath);
+          }
+        }
+      }
+
+      // Recurse into subfolders
+      if (result.subFolders) {
+        for (const folder of result.subFolders) {
+          if (folder.relativePath) {
+            const fullPath = folderPath === '/' ? folder.relativePath : `${folderPath}/${folder.relativePath}`;
+            await walkFolder(fullPath);
+          }
+        }
+      }
+    } catch {
+      // Folder may not exist, ignore
+    }
+  }
+
+  await walkFolder('/');
+  return files;
+}
+
+/**
+ * Create initial commit with organic folder structure and system prompt.
+ * Used when the repository has no commits.
+ */
+async function bootstrapEmptyRepository(): Promise<string> {
   const putFiles = [
     // Folder structure
     ...FOLDER_STRUCTURE.map((path) => ({
@@ -172,7 +229,7 @@ async function bootstrapRepository(): Promise<string> {
     })),
     // System prompt
     {
-      filePath: 'system/agent-system-prompt.md',
+      filePath: '00_System/agent-system-prompt.md',
       fileContent: Buffer.from(DEFAULT_SYSTEM_PROMPT),
     },
   ];
@@ -183,7 +240,48 @@ async function bootstrapRepository(): Promise<string> {
       branchName: 'main',
       authorName: 'Second Brain Bootstrap',
       email: 'bootstrap@second-brain.local',
-      commitMessage: 'Initial repository setup with folder structure and system prompt',
+      commitMessage: 'Initial repository setup with organic folder structure and system prompt',
+      putFiles,
+    })
+  );
+
+  return response.commitId || 'unknown';
+}
+
+/**
+ * Destructive bootstrap: delete all existing files and create fresh organic scaffold.
+ * Used when the repository already has content.
+ */
+async function bootstrapExistingRepository(): Promise<string> {
+  const commitId = await getLatestCommitId();
+  const existingFiles = await listAllFiles(commitId);
+
+  const deleteFiles = existingFiles.map((filePath) => ({
+    filePath,
+  }));
+
+  const putFiles = [
+    // Folder structure
+    ...FOLDER_STRUCTURE.map((path) => ({
+      filePath: path,
+      fileContent: Buffer.from(''),
+    })),
+    // System prompt
+    {
+      filePath: '00_System/agent-system-prompt.md',
+      fileContent: Buffer.from(DEFAULT_SYSTEM_PROMPT),
+    },
+  ];
+
+  const response = await codecommitClient.send(
+    new CreateCommitCommand({
+      repositoryName: REPOSITORY_NAME,
+      branchName: 'main',
+      parentCommitId: commitId,
+      authorName: 'Second Brain Bootstrap',
+      email: 'bootstrap@second-brain.local',
+      commitMessage: 'Destructive bootstrap: organic folder structure and system prompt',
+      deleteFiles: deleteFiles.length > 0 ? deleteFiles : undefined,
       putFiles,
     })
   );
@@ -213,36 +311,20 @@ export async function handler(
       };
     }
 
-    // For Create and Update, check if bootstrap is needed
+    // For Create and Update: always bootstrap (destructive)
     const repoHasCommits = await hasCommits();
-    
+
+    let commitId: string;
     if (!repoHasCommits) {
       console.log('Repository is empty, bootstrapping...');
-      const commitId = await bootstrapRepository();
-      console.log('Bootstrap complete, commit:', commitId);
-      
-      return {
-        Status: 'SUCCESS',
-        PhysicalResourceId: physicalResourceId,
-        StackId: event.StackId,
-        RequestId: event.RequestId,
-        LogicalResourceId: event.LogicalResourceId,
-        Data: {
-          CommitId: commitId,
-          Bootstrapped: 'true',
-        },
-      };
+      commitId = await bootstrapEmptyRepository();
+    } else {
+      console.log('Repository has existing content, performing destructive bootstrap...');
+      commitId = await bootstrapExistingRepository();
     }
 
-    // Repository has commits, check if system prompt exists
-    const promptExists = await systemPromptExists();
-    
-    if (!promptExists) {
-      console.log('System prompt missing, this should not happen in normal operation');
-      // Don't auto-create to avoid overwriting user changes
-    }
+    console.log('Bootstrap complete, commit:', commitId);
 
-    console.log('Repository already initialized, skipping bootstrap');
     return {
       Status: 'SUCCESS',
       PhysicalResourceId: physicalResourceId,
@@ -250,8 +332,8 @@ export async function handler(
       RequestId: event.RequestId,
       LogicalResourceId: event.LogicalResourceId,
       Data: {
-        Bootstrapped: 'false',
-        Message: 'Repository already initialized',
+        CommitId: commitId,
+        Bootstrapped: 'true',
       },
     };
   } catch (error) {
