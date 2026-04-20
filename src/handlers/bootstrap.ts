@@ -184,7 +184,7 @@ async function listAllFiles(commitId: string): Promise<string[]> {
         new GetFolderCommand({
           repositoryName: REPOSITORY_NAME,
           commitSpecifier: commitId,
-          folderPath,
+          folderPath: folderPath || '/',
         })
       );
 
@@ -192,7 +192,9 @@ async function listAllFiles(commitId: string): Promise<string[]> {
       if (result.files) {
         for (const file of result.files) {
           if (file.relativePath) {
-            const fullPath = folderPath === '/' ? file.relativePath : `${folderPath}/${file.relativePath}`;
+            const fullPath = folderPath === '' || folderPath === '/'
+              ? file.relativePath
+              : `${folderPath}/${file.relativePath}`;
             files.push(fullPath);
           }
         }
@@ -202,7 +204,9 @@ async function listAllFiles(commitId: string): Promise<string[]> {
       if (result.subFolders) {
         for (const folder of result.subFolders) {
           if (folder.relativePath) {
-            const fullPath = folderPath === '/' ? folder.relativePath : `${folderPath}/${folder.relativePath}`;
+            const fullPath = folderPath === '' || folderPath === '/'
+              ? folder.relativePath
+              : `${folderPath}/${folder.relativePath}`;
             await walkFolder(fullPath);
           }
         }
@@ -212,7 +216,7 @@ async function listAllFiles(commitId: string): Promise<string[]> {
     }
   }
 
-  await walkFolder('/');
+  await walkFolder('');
   return files;
 }
 

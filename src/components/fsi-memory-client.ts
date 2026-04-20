@@ -1,123 +1,130 @@
 /**
- * FSI Memory Client — AgentCore Memory operations for the Folder Structure Index
+ * FSI Storage Client — CodeCommit operations for the Folder Structure Index
  *
- * Retrieves and persists the Folder Structure Index document in AgentCore Memory
- * under the namespace `/structure/{actorId}`.
+ * Retrieves and persists the Folder Structure Index document in CodeCommit
+ * at `00_System/.fsi-cache.json`.
  *
  * Validates: Requirements 3.3, 3.5, 11.3, 11.4
  */
 
 import {
-  BedrockAgentCoreClient,
-} from '@aws-sdk/client-bedrock-agentcore';
+  CodeCommitClient,
+  GetBranchCommand,
+  GetFileCommand,
+  CreateCommitCommand,
+  FileDoesNotExistException,
+} from '@aws-sdk/client-codecommit';
 import type { FolderStructureIndex } from '../types/folder-structure-index';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const FSI_NAMESPACE_PREFIX = '/structure';
-const FSI_DOCUMENT_KEY = 'folder-structure-index';
+const FSI_CACHE_PATH = '00_System/.fsi-cache.json';
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
 /**
- * Configuration for the FSI memory client.
+ * Configuration for the FSI storage client.
  */
-export interface FSIMemoryConfig {
-  memoryId: string;
-  actorId: string;
-  region: string;
+export interface FSIStorageConfig {
+  repositoryName: string;
+  branchName: string;
 }
+
+/**
+ * @deprecated Use FSIStorageConfig instead
+ */
+export type FSIMemoryConfig = FSIStorageConfig;
 
 // ─── Client ──────────────────────────────────────────────────────────────────
 
+const codecommitClient = new CodeCommitClient({});
+
 /**
- * Retrieve the Folder Structure Index from AgentCore Memory.
+ * Retrieve the Folder Structure Index from CodeCommit (00_System/.fsi-cache.json).
  *
- * Returns null if the FSI is not found or if retrieval fails.
+ * Returns null if the FSI file is not found or if retrieval fails.
  * Logs a warning on failure but does NOT throw.
  *
- * @param memoryId  The AgentCore Memory store identifier
- * @param actorId   The actor (user) identifier for namespace scoping
- * @param region    AWS region
+ * @param repositoryName  The CodeCommit repository name
+ * @param branchName      The branch to read from
  */
 export async function retrieveFSI(
-  memoryId: string,
-  actorId: string,
-  region: string
+  repositoryName: string,
+  branchName: string
 ): Promise<FolderStructureIndex | null> {
   try {
-    const client = new BedrockAgentCoreClient({ region });
-    const namespace = `${FSI_NAMESPACE_PREFIX}/${actorId}`;
+    const response = await codecommitClient.send(
+      new GetFileCommand({
+        repositoryName,
+        filePath: FSI_CACHE_PATH,
+        commitSpecifier: branchName,
+      })
+    );
 
-    // Use the AgentCore Memory retrieve_memories pattern
-    // The SDK command retrieves documents from a memory namespace
-    const command = {
-      memoryId,
-      namespace,
-      key: FSI_DOCUMENT_KEY,
-    };
-
-    // AgentCore Memory stores documents as JSON blobs.
-    // We use the low-level send pattern consistent with the rest of the project.
-    const response = await (client as any).send({
-      ...command,
-      constructor: { name: 'RetrieveMemoryCommand' },
-    });
-
-    if (!response?.content) {
+    if (!response.fileContent) {
       console.warn(
-        `[fsi-memory-client] No FSI found for actor ${actorId} in memory ${memoryId}`
+        `[fsi-memory-client] No FSI found at ${FSI_CACHE_PATH} in ${repositoryName}/${branchName}`
       );
       return null;
     }
 
-    const fsi: FolderStructureIndex = JSON.parse(
-      typeof response.content === 'string'
-        ? response.content
-        : Buffer.from(response.content).toString('utf-8')
-    );
-
+    const raw = Buffer.from(response.fileContent).toString('utf-8');
+    const fsi: FolderStructureIndex = JSON.parse(raw);
     return fsi;
   } catch (error) {
+    if (error instanceof FileDoesNotExistException) {
+      console.warn(
+        `[fsi-memory-client] FSI cache file not found at ${FSI_CACHE_PATH}`
+      );
+      return null;
+    }
     console.warn('[fsi-memory-client] Failed to retrieve FSI:', error);
     return null;
   }
 }
 
 /**
- * Persist the Folder Structure Index to AgentCore Memory.
+ * Persist the Folder Structure Index to CodeCommit (00_System/.fsi-cache.json).
  *
  * Logs an error on failure but does NOT throw (Requirement 11.4).
  *
- * @param memoryId  The AgentCore Memory store identifier
- * @param actorId   The actor (user) identifier for namespace scoping
- * @param fsi       The updated Folder Structure Index to persist
- * @param region    AWS region
+ * @param repositoryName  The CodeCommit repository name
+ * @param branchName      The branch to write to
+ * @param fsi             The updated Folder Structure Index to persist
  */
 export async function persistFSI(
-  memoryId: string,
-  actorId: string,
-  fsi: FolderStructureIndex,
-  region: string
+  repositoryName: string,
+  branchName: string,
+  fsi: FolderStructureIndex
 ): Promise<void> {
   try {
-    const client = new BedrockAgentCoreClient({ region });
-    const namespace = `${FSI_NAMESPACE_PREFIX}/${actorId}`;
+    const branchResp = await codecommitClient.send(
+      new GetBranchCommand({
+        repositoryName,
+        branchName,
+      })
+    );
 
-    const content = JSON.stringify(fsi);
+    const parentCommitId = branchResp.branch?.commitId;
 
-    // Use the AgentCore Memory store pattern
-    const command = {
-      memoryId,
-      namespace,
-      key: FSI_DOCUMENT_KEY,
-      content,
-    };
+    const content = JSON.stringify(fsi, null, 2);
 
-    await (client as any).send({
-      ...command,
-      constructor: { name: 'StoreMemoryCommand' },
-    });
+    await codecommitClient.send(
+      new CreateCommitCommand({
+        repositoryName,
+        branchName,
+        parentCommitId,
+        authorName: 'Second Brain Agent',
+        email: 'agent@second-brain.local',
+        commitMessage: 'Update FSI cache',
+        putFiles: [
+          {
+            filePath: FSI_CACHE_PATH,
+            fileContent: Buffer.from(content),
+          },
+        ],
+      })
+    );
   } catch (error) {
     console.error('[fsi-memory-client] Failed to persist FSI:', error);
     // Do NOT throw — Requirement 11.4: FSI failure must not roll back file commit

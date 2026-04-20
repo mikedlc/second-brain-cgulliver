@@ -288,6 +288,7 @@ export {
 export {
   retrieveFSI,
   persistFSI,
+  type FSIStorageConfig,
   type FSIMemoryConfig,
 } from './fsi-memory-client';
 

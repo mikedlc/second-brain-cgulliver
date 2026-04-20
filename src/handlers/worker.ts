@@ -449,9 +449,8 @@ async function executeCaptureIntent(
     actorId: slackContext.user_id,
   };
 
-  // Retrieve FSI from AgentCore Memory
-  const MEMORY_ID = process.env.MEMORY_ID || '';
-  let fsi = await retrieveFSI(MEMORY_ID, slackContext.user_id, AWS_REGION);
+  // Retrieve FSI from CodeCommit
+  let fsi = await retrieveFSI(REPOSITORY_NAME, 'main');
   if (!fsi) {
     // Use empty FSI if retrieval fails
     fsi = {
@@ -469,7 +468,7 @@ async function executeCaptureIntent(
     config,
     fsi,
     async (updatedFSI) => {
-      await persistFSI(MEMORY_ID, slackContext.user_id, updatedFSI, AWS_REGION);
+      await persistFSI(REPOSITORY_NAME, 'main', updatedFSI);
     }
   );
 

@@ -98,6 +98,18 @@ You MUST return a single valid JSON object. No prose, no explanations outside JS
   "discuss_response": "Conversational reply (for discuss intent only)",
   "session_id": "ds-xxxxxxx (for discuss session continuity)",
 
+  "query_response": "Natural language answer (for query intent only)",
+  "cited_files": ["path/to/cited-file.md"],
+
+  "status_update": {
+    "project_reference": "path/to/project-file.md",
+    "target_status": "active | on-hold | complete | cancelled"
+  },
+
+  "linked_items": [
+    { "sb_id": "sb-xxxxxxx", "title": "Linked item title", "confidence": 0.0-1.0 }
+  ],
+
   "task_details": {
     "title": "Imperative task title",
     "context": "Task context and details"
@@ -129,6 +141,7 @@ You MUST return a single valid JSON object. No prose, no explanations outside JS
 **For query intent:**
 - `query_response`: Required. Natural language answer
 - `cited_files`: Required. Array of file paths referenced
+- `linked_items`: Optional. Cross-item links with sb_id, title, confidence
 
 **For status_update intent:**
 - `status_update`: Required. Contains `project_reference` and `target_status`

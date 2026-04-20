@@ -537,18 +537,33 @@ interface CommitAttemptResult {
 }
 
 /**
+ * Callback that builds putFiles content fresh on each attempt.
+ * This ensures retries re-read the latest file content from CodeCommit.
+ */
+type BuildPutFilesCallback = () => Promise<Array<{ filePath: string; content: string }>>;
+
+/**
  * Commit to CodeCommit with retry-with-rebase on ParentCommitIdOutdatedException.
  * Maximum MAX_RETRY_ATTEMPTS attempts.
+ *
+ * Accepts either static putFiles or a callback that builds them fresh on each attempt.
+ * Using a callback ensures retries re-read the latest file content from CodeCommit,
+ * avoiding stale-content conflicts.
  */
 async function commitWithRetry(
   config: FilingExecutorConfig,
   commitMessage: string,
-  putFiles: Array<{ filePath: string; content: string }>,
+  putFilesOrBuilder: Array<{ filePath: string; content: string }> | BuildPutFilesCallback,
   deleteFilePaths: string[]
 ): Promise<CommitAttemptResult> {
   for (let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
     try {
       const parentCommitId = await getLatestCommitId(config);
+
+      // Resolve putFiles: call builder on each attempt if it's a function
+      const putFiles = typeof putFilesOrBuilder === 'function'
+        ? await putFilesOrBuilder()
+        : putFilesOrBuilder;
 
       const resp = await codecommitClient.send(
         new CreateCommitCommand({

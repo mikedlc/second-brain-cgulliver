@@ -162,6 +162,7 @@ export async function loadDraft(
 
 /**
  * Parse draft file content into a ConversationSession.
+ * Returns null if front matter is missing or required fields are invalid.
  */
 export function parseDraftContent(
   raw: string,
@@ -184,8 +185,30 @@ export function parseDraftContent(
     }
   }
 
-  // Extract session_id from path (last segment before .md, after last __)
-  const pathSessionId = fm['session_id'] || '';
+  // Validate required fields
+  const discussionId = fm['session_id'] || '';
+  const topic = fm['topic'] || '';
+  const relatedArea = fm['related_area'] || '';
+  const messageCountRaw = fm['message_count'] || '';
+
+  if (!discussionId || discussionId.length === 0) {
+    console.warn(`[draft-persistence] Invalid draft at ${draftPath}: missing or empty discussion_id (session_id)`);
+    return null;
+  }
+  if (!topic || topic.length === 0) {
+    console.warn(`[draft-persistence] Invalid draft at ${draftPath}: missing or empty topic`);
+    return null;
+  }
+  if (!relatedArea || relatedArea.length === 0) {
+    console.warn(`[draft-persistence] Invalid draft at ${draftPath}: missing or empty related_area`);
+    return null;
+  }
+
+  const messageCount = parseInt(messageCountRaw, 10);
+  if (isNaN(messageCount) || !isFinite(messageCount)) {
+    console.warn(`[draft-persistence] Invalid draft at ${draftPath}: message_count is not a valid number`);
+    return null;
+  }
 
   // Parse transcript section
   const messages = parseTranscript(raw);
@@ -196,14 +219,14 @@ export function parseDraftContent(
 
   return {
     session_id: sessionId,
-    discussion_id: pathSessionId,
-    topic: fm['topic'] || '',
-    related_area: fm['related_area'] || '',
+    discussion_id: discussionId,
+    topic,
+    related_area: relatedArea,
     messages,
     status: 'active',
     created_at: fm['created_at'] || '',
     last_active_at: fm['last_active_at'] || '',
-    message_count: parseInt(fm['message_count'] || '0', 10),
+    message_count: messageCount,
     expires_at: Math.floor(Date.now() / 1000) + 14400, // Reset TTL on load
   };
 }

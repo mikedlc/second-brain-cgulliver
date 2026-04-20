@@ -381,13 +381,14 @@ export function applyContentOperation(
   operation: ContentOperation,
   timestamp: string
 ): ContentResult {
-  const { action, content: newContent, section_target, insert_after_heading } = operation;
+  const { action, section_target, insert_after_heading } = operation;
+  const newContent = operation.content ?? '';
 
   switch (action) {
     case 'append':
-      return applyAppend(existingContent, newContent || '', section_target, insert_after_heading, timestamp);
+      return applyAppend(existingContent, newContent, section_target, insert_after_heading, timestamp);
     case 'update':
-      return applyUpdate(existingContent, newContent || '', section_target, timestamp);
+      return applyUpdate(existingContent, newContent, section_target, timestamp);
     case 'delete':
       return applyDelete(existingContent, section_target, timestamp);
     default:

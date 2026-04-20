@@ -61,6 +61,11 @@ export function validateFilePath(path: string): PathValidationResult {
     errors.push('Path must not contain traversal sequences (..)');
   }
 
+  // Reject double slashes (empty segments indicate malformed paths)
+  if (path.includes('//')) {
+    errors.push('Path must not contain double slashes (//)');
+  }
+
   // Validate only valid characters
   if (!VALID_PATH_CHARS_PATTERN.test(path)) {
     errors.push(
