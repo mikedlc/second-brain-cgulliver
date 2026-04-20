@@ -144,6 +144,7 @@ export class IngressStack extends cdk.Stack {
       QUEUE_URL: this.queue.queueUrl,
       NODE_OPTIONS: '--enable-source-maps',
       SECURITY_MODE: this.securityMode,
+      BOT_TOKEN_PARAM: '/second-brain/slack-bot-token', // For 👀 reaction on receipt
     };
 
     // Only include signing secret param if HMAC verification is enabled
@@ -177,6 +178,14 @@ export class IngressStack extends cdk.Stack {
     if (signingSecretParam) {
       signingSecretParam.grantRead(this.ingressFunction);
     }
+
+    // Grant read access to bot token for 👀 emoji reaction
+    const botTokenParam = ssm.StringParameter.fromSecureStringParameterAttributes(
+      this,
+      'BotTokenForReaction',
+      { parameterName: '/second-brain/slack-bot-token' }
+    );
+    botTokenParam.grantRead(this.ingressFunction);
 
     // =========================================================================
     // Mode-specific infrastructure

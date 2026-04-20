@@ -33,6 +33,7 @@ import type {
 const QUEUE_URL = process.env.QUEUE_URL!;
 const SIGNING_SECRET_PARAM = process.env.SIGNING_SECRET_PARAM;
 const SECURITY_MODE = process.env.SECURITY_MODE ?? 'mtls-hmac';
+const BOT_TOKEN_PARAM = process.env.BOT_TOKEN_PARAM; // For emoji reaction on receipt
 
 // Determine if HMAC verification is required based on security mode
 const HMAC_ENABLED = SECURITY_MODE === 'mtls-hmac' || SECURITY_MODE === 'hmac-only';
@@ -78,6 +79,58 @@ function isRateLimited(userId: string): boolean {
 let cachedSigningSecret: string | null = null;
 let signingSecretCachedAt: number = 0;
 const SECRET_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// Cache bot token for emoji reactions
+let cachedBotToken: string | null = null;
+let botTokenCachedAt: number = 0;
+
+/**
+ * Get bot token from SSM (for emoji reaction)
+ */
+async function getBotToken(): Promise<string | null> {
+  if (!BOT_TOKEN_PARAM) return null;
+
+  const now = Date.now();
+  if (cachedBotToken && (now - botTokenCachedAt) < SECRET_CACHE_TTL_MS) {
+    return cachedBotToken;
+  }
+
+  try {
+    const response = await ssmClient.send(
+      new GetParameterCommand({
+        Name: BOT_TOKEN_PARAM,
+        WithDecryption: true,
+      })
+    );
+    cachedBotToken = response.Parameter?.Value || null;
+    botTokenCachedAt = now;
+    return cachedBotToken;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Add 👀 emoji reaction to acknowledge message receipt.
+ * Fire-and-forget — does not block the response to Slack.
+ */
+function addEyesReaction(channel: string, timestamp: string): void {
+  getBotToken().then(token => {
+    if (!token) return;
+    fetch('https://slack.com/api/reactions.add', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        channel,
+        timestamp,
+        name: 'eyes',
+      }),
+    }).catch(() => { /* best effort */ });
+  }).catch(() => { /* best effort */ });
+}
 
 /**
  * Get Slack signing secret from SSM Parameter Store
@@ -335,6 +388,9 @@ export async function handler(
 
     // Enqueue for async processing
     try {
+      // Add 👀 reaction immediately to confirm receipt (fire-and-forget)
+      addEyesReaction(eventCallback.event.channel, eventCallback.event.ts);
+
       const sqsMessage = formatSQSMessage(eventCallback);
       await sqsClient.send(
         new SendMessageCommand({
