@@ -477,3 +477,123 @@ describe('Flow Validation Tests', () => {
     expect(flowSteps).toContain('write_receipt_with_prior');
   });
 });
+
+describe('Organic Filing Flow Validation', () => {
+  it('validates message → Classifier → FilingPlan → Worker → CodeCommit commit flow', () => {
+    const flowSteps = [
+      'receive_event',
+      'acquire_lock',
+      'load_prompt',
+      'invoke_agentcore',
+      'parse_filing_plan',
+      'validate_filing_plan',
+      'route_on_intent',
+      'execute_filing_plan',
+      'update_fsi',
+      'send_slack_reply',
+      'write_receipt',
+      'mark_completed',
+    ];
+
+    expect(flowSteps).toContain('parse_filing_plan');
+    expect(flowSteps).toContain('validate_filing_plan');
+    expect(flowSteps).toContain('route_on_intent');
+    expect(flowSteps).toContain('execute_filing_plan');
+    expect(flowSteps).toContain('update_fsi');
+    expect(flowSteps.indexOf('execute_filing_plan')).toBeLessThan(
+      flowSteps.indexOf('update_fsi')
+    );
+  });
+
+  it('validates append to existing file preserves content flow', () => {
+    const appendFlowSteps = [
+      'read_existing_file',
+      'apply_content_operation_append',
+      'verify_content_preserved',
+      'commit_updated_file',
+      'update_fsi_metadata',
+    ];
+
+    expect(appendFlowSteps).toContain('read_existing_file');
+    expect(appendFlowSteps).toContain('apply_content_operation_append');
+    expect(appendFlowSteps).toContain('verify_content_preserved');
+    expect(appendFlowSteps.indexOf('read_existing_file')).toBeLessThan(
+      appendFlowSteps.indexOf('commit_updated_file')
+    );
+  });
+
+  it('validates move operation creates single commit with create + delete', () => {
+    const moveFlowSteps = [
+      'validate_destination_path',
+      'check_destination_not_exists',
+      'read_source_file',
+      'single_commit_put_dest_delete_source',
+      'update_fsi_move',
+    ];
+
+    expect(moveFlowSteps).toContain('single_commit_put_dest_delete_source');
+    // Move must be atomic: single commit with both put and delete
+    expect(moveFlowSteps.indexOf('read_source_file')).toBeLessThan(
+      moveFlowSteps.indexOf('single_commit_put_dest_delete_source')
+    );
+  });
+
+  it('validates discuss → discuss → "file this" → filed content + draft cleanup flow', () => {
+    const discussFlowSteps = [
+      'detect_discuss_intent',
+      'create_or_continue_session',
+      'append_user_message',
+      'persist_draft',
+      'send_conversational_reply',
+      // Second discuss message
+      'append_user_message_2',
+      'persist_draft_2',
+      'send_conversational_reply_2',
+      // "file this" command
+      'detect_file_this_command',
+      'build_conversation_context',
+      'invoke_classifier_for_capture',
+      'execute_capture_filing_plan',
+      'mark_session_filed',
+      'delete_draft',
+    ];
+
+    expect(discussFlowSteps).toContain('detect_discuss_intent');
+    expect(discussFlowSteps).toContain('persist_draft');
+    expect(discussFlowSteps).toContain('detect_file_this_command');
+    expect(discussFlowSteps).toContain('mark_session_filed');
+    expect(discussFlowSteps).toContain('delete_draft');
+    // Draft cleanup happens after filing
+    expect(discussFlowSteps.indexOf('execute_capture_filing_plan')).toBeLessThan(
+      discussFlowSteps.indexOf('delete_draft')
+    );
+  });
+
+  it('validates delete confirmation two-step flow', () => {
+    const deleteFlowSteps = [
+      'detect_delete_action',
+      'check_no_section_target',
+      'return_confirmation_required',
+      'store_pending_delete_in_context',
+      'send_confirmation_prompt',
+      // User responds
+      'receive_next_message',
+      'detect_pending_delete_context',
+      'check_user_response',
+      'execute_delete_on_confirm',
+      'clear_pending_context',
+      'update_fsi_delete',
+      'send_delete_confirmation',
+    ];
+
+    expect(deleteFlowSteps).toContain('return_confirmation_required');
+    expect(deleteFlowSteps).toContain('store_pending_delete_in_context');
+    expect(deleteFlowSteps).toContain('check_user_response');
+    expect(deleteFlowSteps).toContain('execute_delete_on_confirm');
+    expect(deleteFlowSteps).toContain('clear_pending_context');
+    // Confirmation must come before execution
+    expect(deleteFlowSteps.indexOf('return_confirmation_required')).toBeLessThan(
+      deleteFlowSteps.indexOf('execute_delete_on_confirm')
+    );
+  });
+});

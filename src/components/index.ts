@@ -250,3 +250,81 @@ export {
   type HealthReport,
   type SyncInvokerConfig,
 } from './sync-invoker';
+
+// Filing Plan Validator
+export {
+  validateFilingPlan,
+  parseFilingPlanFromLLM,
+} from './filing-plan-validator';
+
+// Filing Plan Path Validator
+export {
+  validateFilePath,
+} from './filing-plan-path-validator';
+
+// Content Integrator
+export {
+  parseMarkdownSections,
+  serializeMarkdownSections,
+  applyContentOperation,
+  type MarkdownSection,
+  type ParsedMarkdown,
+  type ContentOperation,
+  type ContentResult,
+} from './content-integrator';
+
+// FSI Updater
+export {
+  applyCreate as fsiApplyCreate,
+  applyDelete as fsiApplyDelete,
+  applyMove as fsiApplyMove,
+  getIntermediateFolders,
+  isFolderEmpty,
+  rebuildFSIFromTree,
+  type FSIFileMetadata,
+} from './fsi-updater';
+
+// FSI Memory Client
+export {
+  retrieveFSI,
+  persistFSI,
+  type FSIMemoryConfig,
+} from './fsi-memory-client';
+
+// Filing Executor
+export {
+  executeFilingPlan,
+  type FilingExecutorConfig,
+  type FilingExecutionResult,
+  type FSIPersistCallback,
+} from './filing-executor';
+
+// Conversation Session Store
+export {
+  createSession,
+  appendMessage,
+  getActiveSession,
+  markSessionFiled,
+  markSessionDiscarded,
+  generateDiscussionId,
+  buildSessionId,
+  type SessionStoreConfig,
+} from './conversation-session-store';
+
+// Draft Persistence
+export {
+  buildDraftPath,
+  buildDraftContent,
+  persistDraft,
+  loadDraft,
+  deleteDraft,
+  listDrafts,
+  generateSlug as generateDraftSlug,
+  parseDraftContent,
+} from './draft-persistence';
+
+// Wikilink Injector
+export {
+  injectWikilinks,
+  injectBacklinks,
+} from './wikilink-injector';

@@ -127,13 +127,14 @@ const VALID_CLASSIFICATIONS: readonly Classification[] = ['inbox', 'idea', 'deci
 
 /**
  * Valid path prefixes for each classification
+ * @deprecated Legacy classification-to-path mapping. Use organic filing paths instead.
  */
 const VALID_PATH_PREFIXES: Record<Classification, string> = {
-  inbox: '00-inbox/',
-  idea: '10-ideas/',
-  decision: '20-decisions/',
-  project: '30-projects/',
-  task: '', // Tasks don't have file operations
+  inbox: '',
+  idea: '',
+  decision: '',
+  project: '',
+  task: '',
 };
 
 /**

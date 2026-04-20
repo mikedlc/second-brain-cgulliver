@@ -9,3 +9,6 @@ export * from './classification';
 export * from './receipt';
 export * from './action-plan';
 export * from './execution';
+export * from './filing-plan';
+export * from './folder-structure-index';
+export * from './conversation-session';
