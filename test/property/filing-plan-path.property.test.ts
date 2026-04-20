@@ -35,7 +35,7 @@ const validSegment: fc.Arbitrary<string> = fc.stringOf(
     ...'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.'.split('')
   ),
   { minLength: 1, maxLength: 20 }
-);
+).filter((s) => !s.includes('..')); // Exclude traversal sequences
 
 /** Generate a valid organic file path (1-5 segments after area prefix) */
 const validOrganicPath: fc.Arbitrary<string> = fc
