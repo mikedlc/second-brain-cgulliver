@@ -112,12 +112,17 @@ async function getBotToken(): Promise<string | null> {
 
 /**
  * Add 👀 emoji reaction to acknowledge message receipt.
- * Fire-and-forget — does not block the response to Slack.
+ * Awaited but with a short timeout — must complete before Lambda returns.
  */
-function addEyesReaction(channel: string, timestamp: string): void {
-  getBotToken().then(token => {
+async function addEyesReaction(channel: string, timestamp: string): Promise<void> {
+  try {
+    const token = await getBotToken();
     if (!token) return;
-    fetch('https://slack.com/api/reactions.add', {
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000); // 2s max
+
+    await fetch('https://slack.com/api/reactions.add', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -128,8 +133,13 @@ function addEyesReaction(channel: string, timestamp: string): void {
         timestamp,
         name: 'eyes',
       }),
-    }).catch(() => { /* best effort */ });
-  }).catch(() => { /* best effort */ });
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+  } catch {
+    // Best effort — don't fail the request
+  }
 }
 
 /**
@@ -388,8 +398,8 @@ export async function handler(
 
     // Enqueue for async processing
     try {
-      // Add 👀 reaction immediately to confirm receipt (fire-and-forget)
-      addEyesReaction(eventCallback.event.channel, eventCallback.event.ts);
+      // Add 👀 reaction immediately to confirm receipt
+      await addEyesReaction(eventCallback.event.channel, eventCallback.event.ts);
 
       const sqsMessage = formatSQSMessage(eventCallback);
       await sqsClient.send(
