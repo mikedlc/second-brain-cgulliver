@@ -457,12 +457,16 @@ def create_classifier_agent(system_prompt: str, session_manager=None) -> Agent:
 
 
 def validate_action_plan(plan: dict) -> list[str]:
-    """Validate Action Plan structure and return list of errors."""
+    """Validate Action Plan / Filing Plan structure and return list of errors.
+    
+    Supports both the legacy Action Plan format (classification-based) and
+    the new Filing Plan format (intent + file_path based).
+    """
     errors = []
     
-    # Check intent (Phase 2) - defaults to 'capture' for backward compatibility
+    # Check intent - defaults to 'capture' for backward compatibility
     intent = plan.get('intent', 'capture')
-    valid_intents = ['capture', 'query', 'status_update']
+    valid_intents = ['capture', 'query', 'status_update', 'discuss']
     if intent not in valid_intents:
         errors.append(f"Invalid intent: {intent}. Must be one of: {valid_intents}")
     
@@ -475,11 +479,14 @@ def validate_action_plan(plan: dict) -> list[str]:
         except (TypeError, ValueError):
             errors.append(f"Invalid intent_confidence value: {plan['intent_confidence']}")
     
+    # For discuss intent, only require discuss_response
+    if intent == 'discuss':
+        if not plan.get('discuss_response'):
+            errors.append("discuss_response is required for discuss intent")
+        return errors
+    
     # For query intent, different validation rules apply
     if intent == 'query':
-        # Query intent doesn't require classification, title, content, file_operations
-        # query_response and cited_files are populated by the worker after search
-        # Just ensure no file_operations are specified
         if plan.get('file_operations') and len(plan.get('file_operations', [])) > 0:
             errors.append("Query intent must not have file_operations")
         return errors
@@ -498,35 +505,47 @@ def validate_action_plan(plan: dict) -> list[str]:
                 errors.append(f"status_update.target_status must be one of: {valid_statuses}")
         return errors
     
-    # For capture intent, validate required fields
-    # Note: 'content' is not required for tasks (they route to OmniFocus, not files)
-    classification = plan.get('classification', '')
-    if classification == 'task':
-        required_fields = ['classification', 'confidence', 'reasoning', 'title']
+    # For capture intent — support both Filing Plan (file_path) and legacy (classification)
+    if 'file_path' in plan:
+        # New Filing Plan format
+        required_fields = ['file_path', 'action', 'title', 'content', 'reasoning']
+        for field in required_fields:
+            if field not in plan or not plan[field]:
+                errors.append(f"Missing required field: {field}")
+        
+        valid_actions = ['create', 'append', 'update', 'delete', 'move']
+        if 'action' in plan and plan['action'] not in valid_actions:
+            errors.append(f"Invalid action: {plan['action']}. Must be one of: {valid_actions}")
+        
+        if plan.get('action') == 'move' and not plan.get('destination_path'):
+            errors.append("destination_path is required for move action")
+        
+        if plan.get('action') == 'update' and not plan.get('section_target'):
+            errors.append("section_target is required for update action")
     else:
-        required_fields = ['classification', 'confidence', 'reasoning', 'title', 'content']
-    for field in required_fields:
-        if field not in plan:
-            errors.append(f"Missing required field: {field}")
+        # Legacy Action Plan format (classification-based)
+        classification = plan.get('classification', '')
+        if classification == 'task':
+            required_fields = ['classification', 'confidence', 'reasoning', 'title']
+        else:
+            required_fields = ['classification', 'confidence', 'reasoning', 'title', 'content']
+        for field in required_fields:
+            if field not in plan:
+                errors.append(f"Missing required field: {field}")
+        
+        valid_classifications = ['inbox', 'idea', 'decision', 'project', 'task', 'fix']
+        if 'classification' in plan and plan['classification'] not in valid_classifications:
+            errors.append(f"Invalid classification: {plan['classification']}")
     
-    # Classification validation
-    valid_classifications = ['inbox', 'idea', 'decision', 'project', 'task', 'fix']
-    if 'classification' in plan and plan['classification'] not in valid_classifications:
-        errors.append(f"Invalid classification: {plan['classification']}")
-    
-    # Confidence validation
-    if 'confidence' in plan:
+    # Confidence validation (works for both formats)
+    confidence_field = 'confidence' if 'confidence' in plan else 'intent_confidence'
+    if confidence_field in plan:
         try:
-            confidence = float(plan['confidence'])
+            confidence = float(plan[confidence_field])
             if confidence < 0.0 or confidence > 1.0:
                 errors.append(f"Confidence out of range [0, 1]: {confidence}")
         except (TypeError, ValueError):
-            errors.append(f"Invalid confidence value: {plan['confidence']}")
-    
-    # Note: Front matter validation removed from classifier (Task 11.2 revision)
-    # The TypeScript side generates proper SB_IDs and front matter.
-    # LLMs cannot reliably generate random hex values for SB_IDs.
-    # The classifier focuses on classification; the worker adds front matter.
+            errors.append(f"Invalid confidence value: {plan[confidence_field]}")
     
     return errors
 
